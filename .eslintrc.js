@@ -1,7 +1,9 @@
 module.exports = {
+  root: true,
   env: {
     node: true,
     browser: true,
+    es2021: true,
   },
   extends: [
     'eslint:recommended',
@@ -10,6 +12,9 @@ module.exports = {
     'plugin:react/recommended',
     'plugin:react-hooks/recommended',
     'standard-with-typescript',
+    'plugin:import/errors',
+    'plugin:import/warnings',
+    'plugin:import/typescript',
     'prettier',
   ],
   parser: '@typescript-eslint/parser',
@@ -19,5 +24,10 @@ module.exports = {
       jsx: true,
     },
   },
-  plugins: ['@typescript-eslint', 'react'],
+  plugins: ['@typescript-eslint', 'import', 'react', 'react-hooks'],
+  settings: {
+    react: {
+      version: 'detect',
+    },
+  },
 }
