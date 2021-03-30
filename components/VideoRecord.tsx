@@ -76,7 +76,7 @@ export default function VideoRecord(): JSX.Element {
     if (predictions.current !== null) {
       attribute.current = new BufferAttribute(
         new Float32Array(
-          ((predictions.current[0] as any).scaledMesh as Array<
+          ((predictions.current[0] as any).mesh as Array<
             [number, number, number]
           >).flat() ?? []
         ),
