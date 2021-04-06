@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@mediapipe/face_mesh": "^0.1.1617147239",
     "@tensorflow-models/face-landmarks-detection": "0.0.1",
     "@tensorflow/tfjs-backend-webgl": "2.4.0",
     "@tensorflow/tfjs-converter": "2.4.0",

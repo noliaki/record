@@ -16,6 +16,8 @@ import {
   Mesh,
   DirectionalLight,
 } from 'three'
+import { TRIANGULATION } from '../utils/triangulation'
+import { loadImage } from '../utils/loadImage'
 
 export default function VideoRecord(): JSX.Element {
   const chunk = useRef<Blob[]>([])
@@ -33,6 +35,40 @@ export default function VideoRecord(): JSX.Element {
   const attribute = useRef<BufferAttribute | null>(null)
   const material = useRef<MeshBasicMaterial | null>(null)
   const mesh = useRef<Mesh | null>(null)
+  const imgEl = useRef<HTMLImageElement | null>(null)
+
+  const modelSize = useRef<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  })
+  const modelCanvas = useRef<HTMLCanvasElement | null>(null)
+  const modelContext = useRef<CanvasRenderingContext2D | null>(null)
+
+  async function createModel(): Promise<void> {
+    const modelImage = await loadImage('./ojin.jpg')
+    const width = modelImage.naturalWidth
+    const height = modelImage.naturalHeight
+
+    if (modelCanvas.current === null) {
+      return
+    }
+
+    modelCanvas.current.width = width
+    modelCanvas.current.height = height
+
+    modelContext.current = modelCanvas.current.getContext('2d')
+
+    if (modelContext.current === null) {
+      return
+    }
+
+    modelContext.current.drawImage(modelImage, 0, 0)
+
+    modelSize.current = {
+      width,
+      height,
+    }
+  }
 
   function createScene(): void {
     if (rendererEl.current === null) {
@@ -174,6 +210,7 @@ export default function VideoRecord(): JSX.Element {
         <title>Media Recorder</title>
         <link rel="icon" href="/favicon.ico" />
       </Head>
+      <canvas ref={modelCanvas}></canvas>
       <video ref={videoEl} src=""></video>
       <button ref={btnEl} onClick={onClick} type="button">
         ほげ
