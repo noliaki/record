@@ -51,15 +51,15 @@ export default function VideoRecord(): JSX.Element {
   async function init(): Promise<void> {
     model.current = await load(SupportedPackages.mediapipeFacemesh)
 
+    createScene()
+
     await createModel()
     await startVideo()
+
+    await render()
   }
 
   async function createModel(): Promise<void> {
-    if (mesh.current === null) {
-      return
-    }
-
     const modelImage = await loadImage('./ojin.jpg')
     const width = modelImage.naturalWidth
     const height = modelImage.naturalHeight
@@ -99,8 +99,6 @@ export default function VideoRecord(): JSX.Element {
       TRIANGULATION.map((val: number) => prediction.scaledMesh[val]).flat()
     )
 
-    console.log(position)
-
     const uv = new Float32Array(
       TRIANGULATION.map((val: number) => [
         prediction.scaledMesh[val][0] / width,
@@ -108,15 +106,25 @@ export default function VideoRecord(): JSX.Element {
       ]).flat()
     )
 
+    mesh.current = new Mesh()
+
+    mesh.current.geometry = new BufferGeometry()
     mesh.current.geometry.setAttribute(
       'position',
       new BufferAttribute(position, 3)
     )
     mesh.current.geometry.setAttribute('uv', new BufferAttribute(uv, 2))
+
     mesh.current.material = new MeshBasicMaterial({
       map: texture,
       side: DoubleSide,
     })
+
+    mesh.current.rotation.set(Math.PI, Math.PI, 0)
+
+    if (scene.current !== null) {
+      scene.current.add(mesh.current)
+    }
 
     // const position = TRIANGULATION.map((i: number) => prediction.sclaedMesh)
   }
@@ -126,10 +134,9 @@ export default function VideoRecord(): JSX.Element {
       return
     }
 
-    mesh.current.geometry.attributes.position.needsUpdate = true
     const arr = mesh.current.geometry.attributes.position.array
 
-    for (let i = 0; i < arr.length; i++) {
+    for (let i = 0; i < arr.length / 3; i++) {
       mesh.current.geometry.attributes.position.setXYZ(
         i,
         position[i * 3 + 0],
@@ -137,6 +144,8 @@ export default function VideoRecord(): JSX.Element {
         position[i * 3 + 2]
       )
     }
+
+    mesh.current.geometry.attributes.position.needsUpdate = true
   }
 
   async function startVideo(): Promise<void> {
@@ -150,6 +159,13 @@ export default function VideoRecord(): JSX.Element {
 
     videoEl.current.srcObject = stream
     await videoEl.current.play().catch(console.error)
+
+    if (rendererEl.current === null) {
+      return
+    }
+
+    rendererEl.current.width = videoEl.current.videoWidth
+    rendererEl.current.height = videoEl.current.videoHeight
   }
 
   function createScene(): void {
@@ -160,29 +176,31 @@ export default function VideoRecord(): JSX.Element {
     renderer.current = new WebGLRenderer({
       canvas: rendererEl.current,
     })
+    renderer.current.setClearColor(0xffffff)
+
     scene.current = new Scene()
-    camera.current = new PerspectiveCamera(45, 560 / 960)
-    camera.current.position.z = 1000
-    camera.current.lookAt(0, 0, 0)
+    camera.current = new PerspectiveCamera(1, 560 / 960, 1)
+    camera.current.position.z = 100
+    // camera.current.lookAt(0, 0, 0)
 
-    geometry.current = new BufferGeometry()
-    attribute.current = new BufferAttribute(new Float32Array([]), 3)
-    geometry.current.setAttribute('position', attribute.current)
-    material.current = new MeshBasicMaterial({
-      color: 0x00aaff,
-      wireframe: true,
-    })
-    mesh.current = new Mesh(geometry.current, material.current)
-    scene.current.add(mesh.current)
+    // geometry.current = new BufferGeometry()
+    // attribute.current = new BufferAttribute(new Float32Array([]), 3)
+    // geometry.current.setAttribute('position', attribute.current)
+    // material.current = new MeshBasicMaterial({
+    //   color: 0x00aaff,
+    //   wireframe: true,
+    // })
+    // mesh.current = new Mesh(geometry.current, material.current)
+    // scene.current.add(mesh.current)
 
-    const directionalLight = new DirectionalLight(0xffffff)
-    directionalLight.position.set(1, 1, 1)
-    scene.current.add(directionalLight)
+    // const directionalLight = new DirectionalLight(0xffffff)
+    // directionalLight.position.set(1, 1, 1)
+    // scene.current.add(directionalLight)
 
-    render()
+    // render().catch(console.error)
   }
 
-  function render(): void {
+  async function render(): Promise<void> {
     if (
       renderer.current === null ||
       scene.current === null ||
@@ -191,30 +209,32 @@ export default function VideoRecord(): JSX.Element {
       return
     }
 
-    if (predictions.current !== null) {
-      attribute.current = new BufferAttribute(
-        new Float32Array(
-          ((predictions.current[0] as any).mesh as Array<
-            [number, number, number]
-          >).flat() ?? []
-        ),
-        3
-      )
-      console.log(predictions.current)
-      attribute.current.needsUpdate = true
-      if (geometry.current !== null) {
-        geometry.current.setAttribute('position', attribute.current)
-      }
-    }
+    // if (predictions.current !== null) {
+    //   attribute.current = new BufferAttribute(
+    //     new Float32Array(
+    //       ((predictions.current[0] as any).mesh as Array<
+    //         [number, number, number]
+    //       >).flat() ?? []
+    //     ),
+    //     3
+    //   )
+    //   console.log(predictions.current)
+    //   attribute.current.needsUpdate = true
+    //   if (geometry.current !== null) {
+    //     geometry.current.setAttribute('position', attribute.current)
+    //   }
+    // }
+
+    await estimateAndUpdateFromVideo().catch(console.error)
 
     renderer.current.render(scene.current, camera.current)
 
     rafId.current = requestAnimationFrame(() => {
-      render()
+      render().catch(console.error)
     })
   }
 
-  async function estimateFromVideo(): Promise<void> {
+  async function estimateAndUpdateFromVideo(): Promise<void> {
     const [prediction] = (await model.current.estimateFaces({
       input: videoEl.current,
     })) as Array<
@@ -222,6 +242,12 @@ export default function VideoRecord(): JSX.Element {
         scaledMesh: Array<[number, number, number]>
       }
     >
+
+    updatePosition(
+      new Float32Array(
+        TRIANGULATION.map((val: number) => prediction.scaledMesh[val]).flat()
+      )
+    )
   }
 
   const onStartRecord = useCallback(() => {
