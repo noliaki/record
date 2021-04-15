@@ -1,9 +1,10 @@
 import Head from 'next/head'
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 import {
   load,
   SupportedPackages,
   FaceLandmarksPrediction,
+  // FaceLandmarksPackage,
 } from '@tensorflow-models/face-landmarks-detection'
 import '@tensorflow/tfjs-backend-webgl'
 import {
@@ -15,6 +16,8 @@ import {
   MeshBasicMaterial,
   Mesh,
   DirectionalLight,
+  CanvasTexture,
+  DoubleSide,
 } from 'three'
 import { TRIANGULATION } from '../utils/triangulation'
 import { loadImage } from '../utils/loadImage'
@@ -31,11 +34,12 @@ export default function VideoRecord(): JSX.Element {
   const scene = useRef<Scene | null>(null)
   const camera = useRef<PerspectiveCamera | null>(null)
   const rafId = useRef<number | undefined>(undefined)
-  const geometry = useRef<BufferGeometry | null>(null)
   const attribute = useRef<BufferAttribute | null>(null)
+  const geometry = useRef<BufferGeometry | null>(null)
   const material = useRef<MeshBasicMaterial | null>(null)
   const mesh = useRef<Mesh | null>(null)
   const imgEl = useRef<HTMLImageElement | null>(null)
+  const model = useRef<any | null>(null)
 
   const modelSize = useRef<{ width: number; height: number }>({
     width: 0,
@@ -44,7 +48,18 @@ export default function VideoRecord(): JSX.Element {
   const modelCanvas = useRef<HTMLCanvasElement | null>(null)
   const modelContext = useRef<CanvasRenderingContext2D | null>(null)
 
+  async function init(): Promise<void> {
+    model.current = await load(SupportedPackages.mediapipeFacemesh)
+
+    await createModel()
+    await startVideo()
+  }
+
   async function createModel(): Promise<void> {
+    if (mesh.current === null) {
+      return
+    }
+
     const modelImage = await loadImage('./ojin.jpg')
     const width = modelImage.naturalWidth
     const height = modelImage.naturalHeight
@@ -68,6 +83,73 @@ export default function VideoRecord(): JSX.Element {
       width,
       height,
     }
+
+    const [prediction] = (await model.current.estimateFaces({
+      input: modelCanvas.current,
+    })) as Array<
+      FaceLandmarksPrediction & {
+        scaledMesh: Array<[number, number, number]>
+      }
+    >
+
+    const texture = new CanvasTexture(modelCanvas.current)
+    texture.flipY = false
+
+    const position = new Float32Array(
+      TRIANGULATION.map((val: number) => prediction.scaledMesh[val]).flat()
+    )
+
+    console.log(position)
+
+    const uv = new Float32Array(
+      TRIANGULATION.map((val: number) => [
+        prediction.scaledMesh[val][0] / width,
+        prediction.scaledMesh[val][1] / height,
+      ]).flat()
+    )
+
+    mesh.current.geometry.setAttribute(
+      'position',
+      new BufferAttribute(position, 3)
+    )
+    mesh.current.geometry.setAttribute('uv', new BufferAttribute(uv, 2))
+    mesh.current.material = new MeshBasicMaterial({
+      map: texture,
+      side: DoubleSide,
+    })
+
+    // const position = TRIANGULATION.map((i: number) => prediction.sclaedMesh)
+  }
+
+  function updatePosition(position: Float32Array): void {
+    if (mesh.current === null) {
+      return
+    }
+
+    mesh.current.geometry.attributes.position.needsUpdate = true
+    const arr = mesh.current.geometry.attributes.position.array
+
+    for (let i = 0; i < arr.length; i++) {
+      mesh.current.geometry.attributes.position.setXYZ(
+        i,
+        position[i * 3 + 0],
+        position[i * 3 + 1],
+        position[i * 3 + 2]
+      )
+    }
+  }
+
+  async function startVideo(): Promise<void> {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+    })
+
+    if (videoEl.current === null || typeof videoEl.current === 'undefined') {
+      return
+    }
+
+    videoEl.current.srcObject = stream
+    await videoEl.current.play().catch(console.error)
   }
 
   function createScene(): void {
@@ -130,6 +212,16 @@ export default function VideoRecord(): JSX.Element {
     rafId.current = requestAnimationFrame(() => {
       render()
     })
+  }
+
+  async function estimateFromVideo(): Promise<void> {
+    const [prediction] = (await model.current.estimateFaces({
+      input: videoEl.current,
+    })) as Array<
+      FaceLandmarksPrediction & {
+        scaledMesh: Array<[number, number, number]>
+      }
+    >
   }
 
   const onStartRecord = useCallback(() => {
@@ -203,6 +295,10 @@ export default function VideoRecord(): JSX.Element {
       stopPlayAndRecord()
     }
   }
+
+  useEffect(() => {
+    init().catch(console.error)
+  }, [])
 
   return (
     <React.Fragment>
