@@ -1,1 +1,5 @@
 export * from './getUserMediaStream'
+export * from './nextFrame'
+export * from './triangulation'
+export * from './loadImage'
+export * from './wait'

@@ -1,10 +1,9 @@
 import Head from 'next/head'
-import React, { useState, useRef, useCallback, useEffect } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import {
   load,
   SupportedPackages,
   FaceLandmarksPrediction,
-  // FaceLandmarksPackage,
 } from '@tensorflow-models/face-landmarks-detection'
 import '@tensorflow/tfjs-backend-webgl'
 import {
@@ -15,98 +14,75 @@ import {
   BufferAttribute,
   MeshBasicMaterial,
   Mesh,
-  DirectionalLight,
   CanvasTexture,
   DoubleSide,
+  MirroredRepeatWrapping,
 } from 'three'
-import { TRIANGULATION } from '../utils/triangulation'
-import { loadImage } from '../utils/loadImage'
+import { loadImage, TRIANGULATION } from '../utils'
+
+declare global {
+  interface HTMLCanvasElement {
+    captureStream: (frameRate?: number) => MediaStream
+  }
+}
 
 export default function VideoRecord(): JSX.Element {
   const chunk = useRef<Blob[]>([])
-  const videoEl = useRef<HTMLVideoElement | null>(null)
+  const videoEl = useRef<HTMLVideoElement>(document.createElement('video'))
   const recordVideoEl = useRef<HTMLVideoElement | null>(null)
   const btnEl = useRef<HTMLButtonElement | null>(null)
   const mediaRecorder = useRef<MediaRecorder | null>(null)
-  const predictions = useRef<FaceLandmarksPrediction[] | null>(null)
-  const rendererEl = useRef<HTMLCanvasElement | null>(null)
-  const renderer = useRef<WebGLRenderer | null>(null)
-  const scene = useRef<Scene | null>(null)
-  const camera = useRef<PerspectiveCamera | null>(null)
+  const renderer = useRef<WebGLRenderer>(
+    new WebGLRenderer({
+      alpha: true,
+      preserveDrawingBuffer: true,
+    })
+  )
+  const scene = useRef<Scene>(new Scene())
+  const camera = useRef<PerspectiveCamera>(new PerspectiveCamera())
   const rafId = useRef<number | undefined>(undefined)
-  const attribute = useRef<BufferAttribute | null>(null)
-  const geometry = useRef<BufferGeometry | null>(null)
-  const material = useRef<MeshBasicMaterial | null>(null)
-  const mesh = useRef<Mesh | null>(null)
-  const imgEl = useRef<HTMLImageElement | null>(null)
+  const mesh = useRef<Mesh>(new Mesh())
   const model = useRef<any | null>(null)
+  const inputEl = useRef<HTMLInputElement | null>(null)
+  const fileReader = useRef<FileReader>(new FileReader())
 
-  const modelSize = useRef<{ width: number; height: number }>({
-    width: 0,
-    height: 0,
+  const faceSrcCanvas = useRef<HTMLCanvasElement | null>(null)
+  const resultCanvas = useRef<HTMLCanvasElement | null>(null)
+  const resultContext = useRef<CanvasRenderingContext2D | null>(null)
+
+  const videoSize = useRef<{ width: number; height: number }>({
+    width: 540,
+    height: 960,
   })
-  const modelCanvas = useRef<HTMLCanvasElement | null>(null)
-  const modelContext = useRef<CanvasRenderingContext2D | null>(null)
+  const hasFaceSrc = useRef<boolean>(false)
+
+  const [isReady, setIsReady] = useState<boolean>(false)
+  const [isRecording, setIsRecording] = useState<boolean>(false)
+  const [recordedUrl, setRecordedUrl] = useState<string>('')
 
   async function init(): Promise<void> {
-    model.current = await load(SupportedPackages.mediapipeFacemesh)
-
-    createScene()
-
-    await createModel()
     await startVideo()
 
-    await render()
+    createScene()
+    createImageSrcCanvas()
+
+    resultContext.current = resultCanvas.current?.getContext('2d') ?? null
+    resultContext.current?.scale(-1, 1)
+    resultContext.current?.translate(-resultContext.current.canvas.width, 1)
+
+    model.current = await load(SupportedPackages.mediapipeFacemesh)
+    await estimateAndUpdateFromVideo()
+
+    render().catch(console.error)
+
+    setIsReady(true)
   }
 
-  async function createModel(): Promise<void> {
-    const modelImage = await loadImage('./ojin.jpg')
-    const width = modelImage.naturalWidth
-    const height = modelImage.naturalHeight
-
-    if (modelCanvas.current === null) {
-      return
-    }
-
-    modelCanvas.current.width = width
-    modelCanvas.current.height = height
-
-    modelContext.current = modelCanvas.current.getContext('2d')
-
-    if (modelContext.current === null) {
-      return
-    }
-
-    modelContext.current.drawImage(modelImage, 0, 0)
-
-    modelSize.current = {
-      width,
-      height,
-    }
-
-    const [prediction] = (await model.current.estimateFaces({
-      input: modelCanvas.current,
-    })) as Array<
-      FaceLandmarksPrediction & {
-        scaledMesh: Array<[number, number, number]>
-      }
-    >
-
-    const texture = new CanvasTexture(modelCanvas.current)
-    texture.flipY = false
-
+  function createImageSrcCanvas(): void {
     const position = new Float32Array(
-      TRIANGULATION.map((val: number) => prediction.scaledMesh[val]).flat()
+      TRIANGULATION.map((_val) => [0, 0, 0]).flat()
     )
-
-    const uv = new Float32Array(
-      TRIANGULATION.map((val: number) => [
-        prediction.scaledMesh[val][0] / width,
-        prediction.scaledMesh[val][1] / height,
-      ]).flat()
-    )
-
-    mesh.current = new Mesh()
+    const uv = new Float32Array(TRIANGULATION.map((_val) => [0, 0]).flat())
 
     mesh.current.geometry = new BufferGeometry()
     mesh.current.geometry.setAttribute(
@@ -116,30 +92,97 @@ export default function VideoRecord(): JSX.Element {
     mesh.current.geometry.setAttribute('uv', new BufferAttribute(uv, 2))
 
     mesh.current.material = new MeshBasicMaterial({
-      map: texture,
       side: DoubleSide,
     })
 
     mesh.current.rotation.set(Math.PI, Math.PI, 0)
-
-    if (scene.current !== null) {
-      scene.current.add(mesh.current)
-    }
-
-    // const position = TRIANGULATION.map((i: number) => prediction.sclaedMesh)
+    scene.current.add(mesh.current)
   }
 
-  function updatePosition(position: Float32Array): void {
-    if (mesh.current === null) {
+  async function updateFaceSrc(
+    faceSrc: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
+    width: number,
+    height: number
+  ): Promise<void> {
+    if (faceSrcCanvas.current === null) {
       return
     }
 
-    const arr = mesh.current.geometry.attributes.position.array
+    const context = faceSrcCanvas.current.getContext('2d')
 
-    for (let i = 0; i < arr.length / 3; i++) {
+    if (context === null) {
+      return
+    }
+
+    context.clearRect(
+      0,
+      0,
+      faceSrcCanvas.current.width ?? 500,
+      faceSrcCanvas.current.height ?? 500
+    )
+
+    faceSrcCanvas.current.width = width
+    faceSrcCanvas.current.height = height
+
+    context.drawImage(faceSrc, 0, 0)
+
+    const prediction = await estimateFace(faceSrc)
+
+    if (prediction === undefined) {
+      alert('cannot find any faces in this image')
+      return
+    }
+
+    const texture = new CanvasTexture(faceSrcCanvas.current)
+    texture.flipY = false
+    texture.wrapS = MirroredRepeatWrapping
+
+    const uv = new Float32Array(
+      TRIANGULATION.map((val: number) => [
+        prediction.scaledMesh[val][0] / width,
+        prediction.scaledMesh[val][1] / height,
+      ]).flat()
+    )
+
+    const meshMaterial = mesh.current.material as MeshBasicMaterial
+
+    updateUv(uv)
+
+    meshMaterial.map = texture
+    meshMaterial.needsUpdate = true
+
+    hasFaceSrc.current = true
+  }
+
+  async function estimateFace(
+    faceSrc: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement
+  ): Promise<FaceLandmarksPrediction | undefined> {
+    if (model.current === null) {
+      return
+    }
+
+    for (let i = 0; i < 10; i++) {
+      const [prediction] = (await model.current.estimateFaces({
+        input: faceSrc,
+      })) as FaceLandmarksPrediction[]
+
+      if (prediction.faceInViewConfidence >= 1) {
+        return prediction
+      }
+    }
+
+    return undefined
+  }
+
+  function updatePosition(position: Float32Array): void {
+    const arr = mesh.current.geometry.attributes.position.array
+    const len = arr.length / 3
+    const cX = videoSize.current.width / 2
+
+    for (let i = 0; i < len; i++) {
       mesh.current.geometry.attributes.position.setXYZ(
         i,
-        position[i * 3 + 0],
+        cX - (position[i * 3 + 0] - cX),
         position[i * 3 + 1],
         position[i * 3 + 2]
       )
@@ -148,86 +191,71 @@ export default function VideoRecord(): JSX.Element {
     mesh.current.geometry.attributes.position.needsUpdate = true
   }
 
+  function updateUv(uv: Float32Array): void {
+    const arr = mesh.current.geometry.attributes.uv.array
+    const len = arr.length / 2
+
+    for (let i = 0; i < len; i++) {
+      mesh.current.geometry.attributes.uv.setXY(i, uv[i * 2 + 0], uv[i * 2 + 1])
+    }
+
+    mesh.current.geometry.attributes.uv.needsUpdate = true
+  }
+
   async function startVideo(): Promise<void> {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: true,
     })
 
-    if (videoEl.current === null || typeof videoEl.current === 'undefined') {
-      return
-    }
-
     videoEl.current.srcObject = stream
     await videoEl.current.play().catch(console.error)
 
-    if (rendererEl.current === null) {
+    const videoWidth = videoEl.current.videoWidth
+    const videoHeight = videoEl.current.videoHeight
+
+    videoSize.current.width = videoWidth
+    videoSize.current.height = videoHeight
+
+    renderer.current.setSize(videoWidth, videoHeight)
+
+    if (resultCanvas.current === null) {
       return
     }
 
-    rendererEl.current.width = videoEl.current.videoWidth
-    rendererEl.current.height = videoEl.current.videoHeight
+    resultCanvas.current.width = videoWidth
+    resultCanvas.current.height = videoHeight
   }
 
   function createScene(): void {
-    if (rendererEl.current === null) {
-      return
-    }
+    const fov = 1
+    const fovRad = (fov / 2) * (Math.PI / 180)
+    const dist = videoSize.current.height / 2 / Math.tan(fovRad)
 
-    renderer.current = new WebGLRenderer({
-      canvas: rendererEl.current,
-    })
-    renderer.current.setClearColor(0xffffff)
+    camera.current.fov = fov
+    camera.current.aspect = videoSize.current.width / videoSize.current.height
+    camera.current.near = 1
+    camera.current.far = dist * 2
 
-    scene.current = new Scene()
-    camera.current = new PerspectiveCamera(1, 560 / 960, 1)
-    camera.current.position.z = 100
-    // camera.current.lookAt(0, 0, 0)
+    camera.current.position.set(
+      (videoSize.current.width / 2) * -1,
+      (videoSize.current.height / 2) * -1,
+      dist
+    )
 
-    // geometry.current = new BufferGeometry()
-    // attribute.current = new BufferAttribute(new Float32Array([]), 3)
-    // geometry.current.setAttribute('position', attribute.current)
-    // material.current = new MeshBasicMaterial({
-    //   color: 0x00aaff,
-    //   wireframe: true,
-    // })
-    // mesh.current = new Mesh(geometry.current, material.current)
-    // scene.current.add(mesh.current)
-
-    // const directionalLight = new DirectionalLight(0xffffff)
-    // directionalLight.position.set(1, 1, 1)
-    // scene.current.add(directionalLight)
-
-    // render().catch(console.error)
+    camera.current.updateProjectionMatrix()
   }
 
   async function render(): Promise<void> {
-    if (
-      renderer.current === null ||
-      scene.current === null ||
-      camera.current === null
-    ) {
-      return
+    if (resultContext.current !== null) {
+      resultContext.current.drawImage(videoEl.current, 0, 0)
+
+      if (hasFaceSrc.current) {
+        resultContext.current.drawImage(renderer.current.domElement, 0, 0)
+        renderer.current.render(scene.current, camera.current)
+      }
     }
 
-    // if (predictions.current !== null) {
-    //   attribute.current = new BufferAttribute(
-    //     new Float32Array(
-    //       ((predictions.current[0] as any).mesh as Array<
-    //         [number, number, number]
-    //       >).flat() ?? []
-    //     ),
-    //     3
-    //   )
-    //   console.log(predictions.current)
-    //   attribute.current.needsUpdate = true
-    //   if (geometry.current !== null) {
-    //     geometry.current.setAttribute('position', attribute.current)
-    //   }
-    // }
-
-    await estimateAndUpdateFromVideo().catch(console.error)
-
-    renderer.current.render(scene.current, camera.current)
+    await estimateAndUpdateFromVideo()
 
     rafId.current = requestAnimationFrame(() => {
       render().catch(console.error)
@@ -235,6 +263,10 @@ export default function VideoRecord(): JSX.Element {
   }
 
   async function estimateAndUpdateFromVideo(): Promise<void> {
+    if (model.current === null) {
+      return
+    }
+
     const [prediction] = (await model.current.estimateFaces({
       input: videoEl.current,
     })) as Array<
@@ -243,6 +275,10 @@ export default function VideoRecord(): JSX.Element {
       }
     >
 
+    if (prediction?.scaledMesh === undefined) {
+      return
+    }
+
     updatePosition(
       new Float32Array(
         TRIANGULATION.map((val: number) => prediction.scaledMesh[val]).flat()
@@ -250,80 +286,133 @@ export default function VideoRecord(): JSX.Element {
     )
   }
 
-  const onStartRecord = useCallback(() => {
-    console.log('on start recort')
+  function onStartRecord(): void {
+    setIsRecording(true)
+  }
 
-    createScene()
-  }, [])
-
-  const onDataAvailable = useCallback((event: BlobEvent): void => {
+  function onDataAvailable(event: BlobEvent): void {
     chunk.current.push(event.data)
-  }, [])
+  }
 
-  const onStopRecord = useCallback(() => {
-    const blob = new Blob(chunk.current, {
-      type: 'video/mp4',
-    })
-    const videoUrl = URL.createObjectURL(blob)
-
-    if (recordVideoEl.current === null) return
-
-    recordVideoEl.current.src = videoUrl
-    recordVideoEl.current.controls = true
-  }, [])
-
-  async function startPlayAndRecord(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-    })
-
-    if (videoEl.current === null || typeof videoEl.current === 'undefined') {
+  function onStopRecord(): void {
+    if (recordVideoEl.current === null) {
       return
     }
 
-    const model = await load(SupportedPackages.mediapipeFacemesh)
-    videoEl.current.srcObject = stream
-    await videoEl.current.play().catch(console.error)
+    const blob = new Blob(chunk.current, {
+      type: 'video/mp4',
+    })
+
+    setRecordedUrl(URL.createObjectURL(blob))
+
+    if (mediaRecorder.current !== null) {
+      mediaRecorder.current.removeEventListener('start', onStartRecord)
+      mediaRecorder.current.removeEventListener('stop', onStopRecord)
+      mediaRecorder.current.removeEventListener(
+        'dataavailable',
+        onDataAvailable
+      )
+
+      mediaRecorder.current = null
+    }
+
+    setIsRecording(false)
+  }
+
+  function startRecord(): void {
+    const stream = resultContext.current?.canvas?.captureStream(60)
+
+    if (stream === undefined) {
+      return
+    }
+
+    if (recordedUrl !== '') {
+      URL.revokeObjectURL(recordedUrl)
+    }
+    setRecordedUrl('')
+    chunk.current = []
 
     mediaRecorder.current = new MediaRecorder(stream)
     mediaRecorder.current.addEventListener('start', onStartRecord)
     mediaRecorder.current.addEventListener('stop', onStopRecord)
     mediaRecorder.current.addEventListener('dataavailable', onDataAvailable)
 
-    chunk.current = []
     mediaRecorder.current.start(1)
-
-    if (rendererEl.current !== null) {
-      rendererEl.current.width = videoEl.current.videoWidth
-      rendererEl.current.height = videoEl.current.videoHeight
-    }
-
-    predictions.current = await model.estimateFaces({
-      input: videoEl.current,
-    })
   }
 
-  function stopPlayAndRecord(): void {
-    if (videoEl.current === null || mediaRecorder.current === null) {
+  function stopRecord(): void {
+    if (mediaRecorder.current === null) {
       return
     }
 
-    videoEl.current.pause()
     mediaRecorder.current.stop()
   }
 
-  const onClick = (): void => {
-    console.log(chunk.current)
-
-    if (videoEl.current?.paused === true) {
-      startPlayAndRecord().catch(console.error)
-    } else {
-      stopPlayAndRecord()
+  function onRecordToggle(): void {
+    if (isRecording) {
+      stopRecord()
+      return
     }
+
+    startRecord()
+  }
+
+  function onClick(
+    event: React.MouseEvent<HTMLButtonElement, MouseEvent>
+  ): void {
+    event.preventDefault()
+
+    updateFaceSrc(
+      videoEl.current,
+      videoSize.current.width,
+      videoSize.current.height
+    ).catch(console.error)
+  }
+
+  function onInputChange(event: React.ChangeEvent<HTMLInputElement>): void {
+    event.preventDefault()
+
+    const file: File | undefined = event.target.files?.[0]
+    const fileType: string | undefined = file?.type
+
+    if (
+      file === undefined ||
+      fileType === undefined ||
+      !fileType.startsWith('image/')
+    ) {
+      return
+    }
+
+    fileReader.current.readAsDataURL(file)
+  }
+
+  function onLoadFile(_event: Event): void {
+    if (inputEl.current !== null) {
+      inputEl.current.value = ''
+    }
+
+    if (typeof fileReader.current.result !== 'string') {
+      return
+    }
+
+    loadImage(fileReader.current.result)
+      .then((img: HTMLImageElement): void => {
+        updateFaceSrc(img, img.naturalWidth, img.naturalHeight).catch(
+          console.error
+        )
+      })
+      .catch(console.error)
   }
 
   useEffect(() => {
+    const fr = fileReader.current
+
+    fr.addEventListener('load', onLoadFile)
     init().catch(console.error)
+
+    return () => {
+      fr.removeEventListener('load', onLoadFile)
+    }
   }, [])
 
   return (
@@ -332,13 +421,86 @@ export default function VideoRecord(): JSX.Element {
         <title>Media Recorder</title>
         <link rel="icon" href="/favicon.ico" />
       </Head>
-      <canvas ref={modelCanvas}></canvas>
-      <video ref={videoEl} src=""></video>
-      <button ref={btnEl} onClick={onClick} type="button">
-        ほげ
-      </button>
-      <canvas ref={rendererEl}></canvas>
-      <video ref={recordVideoEl} src=""></video>
+
+      <canvas
+        ref={faceSrcCanvas}
+        className="fixed top-0 right-0 shadow-md"
+        style={{
+          maxWidth: '10vw',
+        }}
+      ></canvas>
+      <div
+        className="wrapper mr-4 ml-4 text-center"
+        style={{ display: isReady ? '' : 'none' }}
+      >
+        <canvas
+          ref={resultCanvas}
+          className={[
+            'mx-auto',
+            'max-w-full',
+            'block',
+            'result',
+            isRecording ? '-recording' : '',
+          ].join(' ')}
+        ></canvas>
+        <div className="flex justify-center items-center mt-4">
+          <input
+            ref={inputEl}
+            type="file"
+            accept="image/*"
+            onChange={onInputChange}
+            className="border rounded"
+          />
+          <button
+            ref={btnEl}
+            onClick={onClick}
+            type="button"
+            className="border rounded py-1 px-2 bg-blue-500 text-white ml-4"
+          >
+            shoot
+          </button>
+        </div>
+        <div className="my-6">
+          <video
+            ref={recordVideoEl}
+            src={recordedUrl}
+            controls
+            className="mx-auto max-w-full"
+            style={{
+              display: recordedUrl === '' ? 'none' : '',
+            }}
+          ></video>
+          <div className="text-center my-4">
+            <button type="button" onClick={onRecordToggle}>
+              <span
+                className={[
+                  'icon-record',
+                  isRecording ? '-recording' : '',
+                ].join(' ')}
+              ></span>
+              {isRecording ? 'stop' : 'start'} record
+            </button>
+          </div>
+          {recordedUrl !== '' ? (
+            <div className="text-center mt-4">
+              <a
+                href={recordedUrl}
+                download={`record-${Date.now()}.mp4`}
+                className="border rounded py-2 px-6 bg-green-500 text-white"
+              >
+                download movie file
+              </a>
+            </div>
+          ) : (
+            ''
+          )}
+        </div>
+      </div>
+      {isReady ? (
+        ''
+      ) : (
+        <div className="loading fixed inset-0 bg-black bg-opacity-80"></div>
+      )}
     </React.Fragment>
   )
 }
