@@ -114,6 +114,13 @@ export default function VideoRecord(): JSX.Element {
       return
     }
 
+    const prediction = await estimateFace(faceSrc)
+
+    if (prediction === undefined) {
+      alert('cannot find any faces in this image')
+      return
+    }
+
     context.clearRect(
       0,
       0,
@@ -125,13 +132,6 @@ export default function VideoRecord(): JSX.Element {
     faceSrcCanvas.current.height = height
 
     context.drawImage(faceSrc, 0, 0)
-
-    const prediction = await estimateFace(faceSrc)
-
-    if (prediction === undefined) {
-      alert('cannot find any faces in this image')
-      return
-    }
 
     const texture = new CanvasTexture(faceSrcCanvas.current)
     texture.flipY = false
@@ -165,6 +165,10 @@ export default function VideoRecord(): JSX.Element {
       const [prediction] = (await model.current.estimateFaces({
         input: faceSrc,
       })) as FaceLandmarksPrediction[]
+
+      if (typeof prediction === 'undefined') {
+        continue
+      }
 
       if (prediction.faceInViewConfidence >= 1) {
         return prediction
